@@ -1,0 +1,66 @@
+# ignore slurms
+*.out
+*.idea
+#
+plots/
+__pycache__/
+runs/
+#
+lightning_logs/
+
+
+*.so
+
+# Distribution / packaging
+bin/
+build/
+develop-eggs/
+dist/
+eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+.tox/
+.coverage
+.cache
+nosetests.xml
+coverage.xml
+
+# Translations
+*.mo
+
+# Mr Developer
+.mr.developer.cfg
+.project
+.pydevproject
+
+# Rope
+.ropeproject
+
+# Django stuff:
+*.log
+*.pot
+
+# Sphinx documentation
+docs/_build/
+/char_runs_logP/
+/figures/hist_len.pdf
+/figures/hist_len_filtered.pdf
+/figures/hist_len_focused.pdf
+/figures/hist_len_prot.pdf
+/figures/hist_smiles_length.pickle
+/figures/data/run-from_scratch_1414e4-tag-val_loss.csv
+/figures/data/run-from_sm&cm-tag-val_loss_step.csv
+/figures/data/run-from_sm-tag-val_loss_step.csv
+/figures/Vallossstep_scratch_sm_smcm.png

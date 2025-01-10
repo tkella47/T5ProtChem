@@ -1,0 +1,1 @@
+{"train": "train_chemical.lmdb", "prot_val": "val_protein_v2.lmdb", "chemmask": "train_protein_v2.lmdb", "chemmask_val": "af500k_chem_frag.lmdb", "chem_val": "valid_chemical.lmdb"}
