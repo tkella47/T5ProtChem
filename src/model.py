@@ -461,7 +461,6 @@ class T5ChemEsmAlign(T5Chem):
 
 
 class T5PropertyRegression(pl.LightningModule):
-    # eventually I will go back here and set up inheirtance, but today is not that day
     def __init__(self, scaler_path, checkpoint_path: Path = None, learning_rate=5e-4, num_classes=1, lr_free=False, loss="kl",
                  **kwargs) -> None:
         super().__init__()
@@ -470,10 +469,7 @@ class T5PropertyRegression(pl.LightningModule):
         self.scaler = None
         if scaler_path is not None:
             self.scaler = joblib.load(scaler_path)
-            self.scaler.clip = True
-            #self.scaler_min = torch.tensor(self.scaler.data_min_).to(torch.float32).cuda()
-            #self.scaler_max = torch.tensor(self.scaler.data_max_).to(torch.float32).cuda()
-        
+            self.scaler.clip = True        
         if checkpoint_path is not None:
             self.model = extract_T5_model(checkpoint_path, learning_rate, 2 if loss=="kl" else 1, **kwargs)
         else:
