@@ -15,7 +15,7 @@ from rdkit import Chem
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torchmetrics import Accuracy
-from torchmetrics.classification import BinaryF1Score, BinaryPrecision, BinaryRecall
+from torchmetrics.classification import BinaryF1Score, BinaryPrecision, BinaryRecall, AveragePrecision, AUROC
 from torchmetrics.regression import PearsonCorrCoef, R2Score
 from torchview import draw_graph
 from transformers import EsmModel, EsmForSequenceClassification
@@ -38,9 +38,10 @@ def extract_T5_model_pl(path):
 
 
 def extract_T5_model(path, learning_rate, new_out=None, **kwargs):
+    breakpoint()
     model_dict = torch.load(path)
     model = T5Chem(learning_rate, save_hp = False, **kwargs,)
-    if new_out is not None and model_dict["model.lm_head.weight"].shape[0] != model.model.lm_head.weight.shape[0]:
+    if model_dict["model.lm_head.weight"].shape[0] != model.model.lm_head.weight.shape[0]:
         model.model.set_output_embeddings(nn.Linear(model.model.config.d_model, new_out))
     model.load_state_dict(model_dict)
     return model.model
@@ -117,40 +118,38 @@ class T5Chem(pl.LightningModule):
         """
         outputs = self.model(**batch)
         loss = outputs.loss.detach()
-        match self.cov_binder:
-            case "v1":
-                accuracy_smiles, accuracy_start = self.test_cov_binder(batch, batch_idx, legacy=False)
-                self.log("accuracy_smiles", accuracy_smiles, on_step=False, on_epoch=True, prog_bar=True, logger=True,
+        if self.cov_binder == "v1":
+            accuracy_smiles, accuracy_start = self.test_cov_binder(batch, batch_idx, legacy=False)
+            self.log("accuracy_smiles", accuracy_smiles, on_step=False, on_epoch=True, prog_bar=True, logger=True,
+                sync_dist=True)
+            self.log("accuracy_start", accuracy_start, on_step=False, on_epoch=True, prog_bar=True, logger=True,
+                sync_dist=True)
+        elif self.cov_binder == 'v2':
+            accuracy_smiles, accuracy_pos = self.test_cov_binder_v2(batch, batch_idx, legacy=False)
+            self.log("accuracy_smiles", accuracy_smiles, on_step=False, on_epoch=True, prog_bar=True, logger=True,
+                sync_dist=True)
+            self.log("accuracy_pos", accuracy_pos, on_step=False, on_epoch=True, prog_bar=True, logger=True,
                          sync_dist=True)
-                self.log("accuracy_start", accuracy_start, on_step=False, on_epoch=True, prog_bar=True, logger=True,
-                         sync_dist=True)
-            case "v2":
-                accuracy_smiles, accuracy_pos = self.test_cov_binder_v2(batch, batch_idx, legacy=False)
-                self.log("accuracy_smiles", accuracy_smiles, on_step=False, on_epoch=True, prog_bar=True, logger=True,
-                         sync_dist=True)
-                self.log("accuracy_pos", accuracy_pos, on_step=False, on_epoch=True, prog_bar=True, logger=True,
-                         sync_dist=True)
-            case False:
-                pass
+        else:
+            pass
         self.log('val_loss', loss, on_step=False, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
         return loss
 
     def test_step(self, batch, batch_idx):
-        match self.cov_binder:
-            case "v1":
-                accuracy_smiles, accuracy_start = self.test_cov_binder(batch, batch_idx, self.legacy)
-                self.log("accuracy_smiles", accuracy_smiles, on_step=False, on_epoch=True, prog_bar=True, logger=True,
+        if self.cov_binder =="v1":
+            accuracy_smiles, accuracy_start = self.test_cov_binder(batch, batch_idx, self.legacy)
+            self.log("accuracy_smiles", accuracy_smiles, on_step=False, on_epoch=True, prog_bar=True, logger=True,
                         sync_dist=True)
-                self.log("accuracy_start", accuracy_start, on_step=False, on_epoch=True, prog_bar=True, logger=True,
+            self.log("accuracy_start", accuracy_start, on_step=False, on_epoch=True, prog_bar=True, logger=True,
                         sync_dist=True)
-            case "v2":
-                accuracy_smiles, accuracy_pos = self.test_cov_binder_v2(batch, batch_idx, self.legacy)
-                self.log("accuracy_smiles", accuracy_smiles, on_step=False, on_epoch=True, prog_bar=True, logger=True,
+        elif self.cov_binder == "v2":
+            accuracy_smiles, accuracy_pos = self.test_cov_binder_v2(batch, batch_idx, self.legacy)
+            self.log("accuracy_smiles", accuracy_smiles, on_step=False, on_epoch=True, prog_bar=True, logger=True,
                          sync_dist=True)
-                self.log("accuracy_pos", accuracy_pos, on_step=False, on_epoch=True, prog_bar=True, logger=True,
+            self.log("accuracy_pos", accuracy_pos, on_step=False, on_epoch=True, prog_bar=True, logger=True,
                          sync_dist=True)
-            case False:
-                self.test_fwdrxn_step(batch, batch_idx, self.legacy)
+        else:
+            self.test_fwdrxn_step(batch, batch_idx, self.legacy)
 
 
     def test_cov_binder_v2(self, batch, batch_idx, legacy):
@@ -783,6 +782,8 @@ class T5Classification(pl.LightningModule):
         self.model.set_output_embeddings(nn.Linear(self.model.config.d_model, num_classes)) # Change LM Head)
         self.accuracy = Accuracy("binary")
         self.F1Score = BinaryF1Score()
+        self.average_precision = AveragePrecision(task="binary")
+        self.auroc = AUROC(task="binary")
         self.precision = BinaryPrecision()
         self.recall = BinaryRecall()
         self.record_preds = []
@@ -818,6 +819,10 @@ class T5Classification(pl.LightningModule):
         self.F1Score(outputs.logits.squeeze(), batch.labels)
         self.precision(outputs.logits.squeeze(), batch.labels)
         self.recall(outputs.logits.squeeze(), batch.labels)
+        self.average_precision(outputs.logits.squeeze(), batch.labels)
+        self.auroc(outputs.logits.squeeze(), batch.labels)
+        self.log("AUPRC", self.average_precision, on_step=False, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
+        self.log("AUROC", self.auroc, on_step=False, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
         self.log("accuracy_loss", self.accuracy, on_step=False, on_epoch=True, prog_bar=True, logger=True,
                  sync_dist=True)
         self.log("F1_score", self.F1Score, on_step=False, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
@@ -836,6 +841,10 @@ class T5Classification(pl.LightningModule):
         self.precision_values.append(self.precision(logits, batch.labels))
         self.recall_values.append(self.recall(logits, batch.labels))
         self.record_preds.append((logits, batch.labels))
+        self.average_precision(outputs.logits.squeeze(), batch.labels)
+        self.auroc(outputs.logits.squeeze(), batch.labels)
+        self.log("AUPRC", self.average_precision, on_step=False, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
+        self.log("AUROC", self.auroc, on_step=False, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
         self.log("accuracy_loss", self.accuracy, on_step=False, on_epoch=True, prog_bar=True, logger=True,
                  sync_dist=True)
         self.log("F1_score",self.F1Score, on_step=False, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)

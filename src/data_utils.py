@@ -98,29 +98,6 @@ class EsmAlignDataset(LMDB):
                                         max_length=self.max_length)
         return {"t5chem": t5chem_inputs, "esm": esm_inputs}
 
-class TDSDataset(Dataset):
-    def __init__(self, dataset :pd.DataFrame, scaler : sklearn.preprocessing.MinMaxScaler | None = None):
-        self.dataset = dataset
-        self.scaler = scaler
-        if scaler is not None:
-            self.dataset["Y"] = scaler.transform(self.dataset["Y"].values.reshape(-1, 1))
-        self.max_length = 1024
-
-    def __len__(self):
-        return len(self.dataset)
-
-    def __getitem__(self, idx):
-        data = self.dataset.iloc[idx]
-
-        return data["Drug"], "<P>" + "<P>".join(data["Target"]), torch.tensor(data["Y"])
-
-    def get_scaler(self):
-        if self.stage == "train":
-            scaler = MinMaxScaler()
-            scaler.fit(self.dataset["Y"].values.reshape(-1, 1))
-            return scaler
-        else:
-            print("Scaler is only available for training data.")
 
 class SpanMaskDataset(LMDBTokenizer):
     def __init__(self, data_dir, tokenizer, max_length=1024, prefix="Span-Mask:", teardown=False, mlm_probability=0.15,

@@ -11,11 +11,10 @@ from pytorch_lightning.utilities import CombinedLoader
 from torch.cuda import device_count
 from torch.utils.data import DataLoader
 from transformers import PreTrainedTokenizerFast
-from tdc.multi_pred import DTI
 from collator import SpanCollator, BaseCollator, BaseStringCollator, ChemMaskCollator, NewChemMaskCollator, ESMCollator, \
     AltCollator, PosCollator
 from data_utils import LineByLineTextDataset, PropertyPretrainDataset, TextPolarsDataset, GOTermDataset, \
-    ChemMaskDataset, SpanMaskDataset, ESMPolarsDataset, EsmAlignDataset, ESMGOTermDataset, AltPolarsDataset, TDSDataset
+    ChemMaskDataset, SpanMaskDataset, ESMPolarsDataset, EsmAlignDataset, ESMGOTermDataset, AltPolarsDataset 
 
 HYPERTHREADING_PATH = "/sys/devices/system/cpu/smt/active"
 
@@ -83,60 +82,6 @@ class BaseStringModule(pl.LightningDataModule):
                           collate_fn=self.collator, shuffle=False, pin_memory=True)
 
 
-class DTIModule(pl.LightningDataModule):
-    def __init__(self, dataset : str, mode=None, log_conversion=False, batch_size=32, workers=None, vocab_file=None, scaler_path=None, create_scaler=False):
-        super().__init__()
-        assert dataset in ['BindingDB_Kd', 'BindingDB_IC50','BindingDB_Ki', 'DAVIS', 'KIBA']
-        self.dataset = dataset
-        self.mode = mode
-        self.log_conversion = log_conversion
-        self.batch_size = batch_size
-        self.scaler_path = scaler_path
-        self.create_scaler = create_scaler
-        self.workers = get_workers() if workers is None else workers
-        self.vocab_file = vocab_file
-        self.tokenizer = PreTrainedTokenizerFast(tokenizer_file=self.vocab_file, bos_token="<pad>",
-                                                 eos_token="</s>",
-                                                 unk_token="<unk>", pad_token="<pad>", mask_token="<mask>",
-                                                 return_special_tokens_mask=True)
-
-        self.collator = AltCollator(tokenizer=self.tokenizer, prefix="", max_size=1024)
-    def prepare_data(self):
-        full_dataset = DTI(name=self.dataset)
-        if self.log_conversion:
-            full_dataset.convert_to_log(form="binding")
-        self.full_dataset = full_dataset.get_split(frac=[0.8, 0.1, 0.1], seed = 42)
-        if self.scaler_path is None and self.create_scaler:
-            self.scaler = MinMaxScaler()
-            self.scaler.fit(self.full_dataset["train"]["Y"].to_numpy().reshape(-1, 1))
-            joblib.dump(self.scaler, "scaler.pkl")
-        elif self.scaler_path is not None and not self.create_scaler:
-            self.scaler = joblib.load(self.scaler_path)
-        else:
-            self.scaler = None
-
-    def setup(self, stage: str) -> None:
-        if stage == "fit" or stage == "validate":
-            self.train_dataset = TDSDataset(self.full_dataset["train"], self.scaler)
-            self.val_dataset = TDSDataset(self.full_dataset["valid"], self.scaler)
-        elif stage == "validate":
-            self.val_dataset = TDSDataset(self.full_dataset["valid"], self.scaler)
-        elif stage == "test":
-            self.test_dataset = TDSDataset(self.full_dataset["test"], self.scaler)
-        else:
-            raise ValueError("Stage must be fit, validate,or test")
-
-    def train_dataloader(self) -> DataLoader:
-        return DataLoader(self.train_dataset, batch_size=self.batch_size, num_workers=self.workers,
-                          collate_fn=self.collator, shuffle=True, pin_memory=True)
-
-    def val_dataloader(self) -> DataLoader:
-        return DataLoader(self.val_dataset, batch_size=self.batch_size, num_workers=self.workers,
-                          collate_fn=self.collator, shuffle=False, pin_memory=True)
-
-    def test_dataloader(self) -> DataLoader:
-        return DataLoader(self.test_dataset, batch_size=self.batch_size, num_workers=self.workers,
-                          collate_fn=self.collator, shuffle=False, pin_memory=True)
 
 
 
