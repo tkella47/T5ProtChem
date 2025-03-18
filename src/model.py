@@ -15,7 +15,7 @@ from rdkit import Chem
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torchmetrics import Accuracy
-from torchmetrics.classification import BinaryF1Score, BinaryPrecision, BinaryRecall, AveragePrecision, AUROC
+from torchmetrics.classification import BinaryF1Score, BinaryPrecision, BinaryRecall, AveragePrecision, AUROC,Precision, Recall, F1Score
 from torchmetrics.regression import PearsonCorrCoef, R2Score
 from torchview import draw_graph
 from transformers import EsmModel, EsmForSequenceClassification
@@ -23,7 +23,7 @@ from transformers import T5Config, T5ForConditionalGeneration, get_constant_sche
     get_linear_schedule_with_warmup
 from metrics import CIndex, Boundary_Accuracy, R2MPaper, R2MDTA, PosAccuracy
 
-
+"""
 def extract_T5_model_pl(path):
     pl_dict = torch.load(path)
     model_dict = pl_dict["state_dict"]
@@ -34,15 +34,25 @@ def extract_T5_model_pl(path):
     model = T5Chem(learning_rate=0.0001414, feed_forward_proj=feed_forward_proj)
     model.load_state_dict(model_dict)
     return model.model
+"""
 
-
+def extract_T5_model_pl(path, learning_rate, new_out=None, **kwargs):
+    model_dict = torch.load(path)
+    model = T5Chem(learning_rate, save_hp = False, **kwargs,)
+    if model_dict["lm_head.weight"].shape[0] != model.model.lm_head.weight.shape[0]:
+        model.model.set_output_embeddings(nn.Linear(model.model.config.d_model, model_dict["lm_head.weight"].shape[0], bias=True if "lm_head.bias" in model_dict else False))
+    if "lm_head.bias" in model_dict:
+        model.model.set_output_embeddings(nn.Linear(model.model.config.d_model, model_dict["lm_head.weight"].shape[0], bias=True))
+    model.load_state_dict(model_dict)
+    return model.model
 
 def extract_T5_model(path, learning_rate, new_out=None, **kwargs):
-    breakpoint()
     model_dict = torch.load(path)
     model = T5Chem(learning_rate, save_hp = False, **kwargs,)
     if model_dict["model.lm_head.weight"].shape[0] != model.model.lm_head.weight.shape[0]:
-        model.model.set_output_embeddings(nn.Linear(model.model.config.d_model, new_out))
+        model.model.set_output_embeddings(nn.Linear(model.model.config.d_model, model_dict["model.lm_head.weight"].shape[0], bias=True if "model.lm_head.bias" in model_dict else False))
+    if "model.lm_head.bias" in model_dict:
+        model.model.set_output_embeddings(nn.Linear(model.model.config.d_model, model_dict["model.lm_head.weight"].shape[0], bias=True))
     model.load_state_dict(model_dict)
     return model.model
 
@@ -87,7 +97,7 @@ class T5Chem(pl.LightningModule):
         if save_hp:
             self.save_hyperparameters()
         print(self.hparams)
-
+    """
     def on_test_start(self):
         sample_data = torch.randint(10, (1, 128))
         sample_attn = torch.ones(1, 128)
@@ -96,7 +106,7 @@ class T5Chem(pl.LightningModule):
                                  dtypes=[torch.long, torch.long, torch.long], expand_nested=True,
                                  hide_inner_tensors=False, depth=3)
         return None
-
+    """
     def training_step(self, batch, batch_idx):
         if "labels" not in batch.keys():  # To catch the combined dataloader
             loss = 0
@@ -773,15 +783,19 @@ class T5Classification(pl.LightningModule):
     def __init__(self, checkpoint_path, learning_rate=5e-4, num_cycles=3,
                  num_classes=498, max_steps=300000, **kwargs) -> None:
         super().__init__()
-        self.save_hyperparameters()
+        self.save_hyperparameters(ignore=["_class_path"])
         self.model = extract_T5_model(checkpoint_path, learning_rate, **kwargs)
         self.model.set_output_embeddings(nn.Linear(self.model.config.d_model, num_classes)) # Change LM Head)
-        self.accuracy = Accuracy("binary")
-        self.F1Score = BinaryF1Score()
-        self.average_precision = AveragePrecision(task="binary")
-        self.auroc = AUROC(task="binary")
-        self.precision = BinaryPrecision()
-        self.recall = BinaryRecall()
+        if num_classes == 1:
+            problem_settings = {"task":"binary"}
+        else:
+            problem_settings = {"task":"multilabel", "num_labels":num_classes}
+        self.accuracy = Accuracy(**problem_settings)
+        self.F1Score = F1Score(**problem_settings)
+        self.average_precision = AveragePrecision(**problem_settings)
+        self.auroc = AUROC(**problem_settings)
+        self.precision = Precision(**problem_settings)
+        self.recall = Recall(**problem_settings)
         self.record_preds = []
         self.model.config.tie_word_embeddings = False
 
@@ -810,13 +824,12 @@ class T5Classification(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         outputs = self(**batch)
         loss = outputs.loss.detach()
-
         self.accuracy(outputs.logits.squeeze(), batch.labels)
         self.F1Score(outputs.logits.squeeze(), batch.labels)
         self.precision(outputs.logits.squeeze(), batch.labels)
         self.recall(outputs.logits.squeeze(), batch.labels)
-        self.average_precision(outputs.logits.squeeze(), batch.labels)
-        self.auroc(outputs.logits.squeeze(), batch.labels)
+        self.average_precision(outputs.logits.squeeze(), batch.labels.int())
+        self.auroc(outputs.logits.squeeze(), batch.labels.int())
         self.log("AUPRC", self.average_precision, on_step=False, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
         self.log("AUROC", self.auroc, on_step=False, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
         self.log("accuracy_loss", self.accuracy, on_step=False, on_epoch=True, prog_bar=True, logger=True,
@@ -837,8 +850,8 @@ class T5Classification(pl.LightningModule):
         self.precision_values.append(self.precision(logits, batch.labels))
         self.recall_values.append(self.recall(logits, batch.labels))
         self.record_preds.append((logits, batch.labels))
-        self.average_precision(outputs.logits.squeeze(), batch.labels)
-        self.auroc(outputs.logits.squeeze(), batch.labels)
+        self.average_precision(outputs.logits.squeeze(), batch.labels.int())
+        self.auroc(outputs.logits.squeeze(), batch.labels.int())
         self.log("AUPRC", self.average_precision, on_step=False, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
         self.log("AUROC", self.auroc, on_step=False, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
         self.log("accuracy_loss", self.accuracy, on_step=False, on_epoch=True, prog_bar=True, logger=True,
@@ -898,8 +911,12 @@ class T5ESMClassification(T5Classification):
         super().__init__(checkpoint_path, learning_rate, num_cycles, num_classes, max_steps, **kwargs)
         self.esm = EsmModel.from_pretrained("facebook/esm2_t30_150M_UR50D")
         # freeze all the parameters in esm
-        for param in self.esm.parameters():
-            param.requires_grad = False
+        if "freeze" in kwargs:
+            for param in self.esm.parameters():
+                param.requires_grad = False
+        else:
+            for param in self.esm.parameters():
+                param.requires_grad = True
 
     def forward(self, **batch):
         esm_embeddings = self.esm(batch["esm_input_ids"], batch["esm_attention_mask"]).last_hidden_state
@@ -921,19 +938,28 @@ class T5ESMClassification(T5Classification):
 class ESMGoTerm(pl.LightningModule):
     def __init__(self, learning_rate, num_classes=489, lora=False, **kwargs) -> None:
         super().__init__()
-        esm = EsmForSequenceClassification.from_pretrained("facebook/esm2_t30_150M_UR50D", device_map="auto")
-        esm.classifier.out_proj = nn.Linear(640, num_classes)
-        esm.config.problem_type = "multi_label_classification"
-        self.accuracy = Accuracy("binary")
-        self.F1Score = BinaryF1Score()
-        self.save_hyperparameters()
+        self.esm = EsmForSequenceClassification.from_pretrained("facebook/esm2_t30_150M_UR50D", device_map="auto",num_labels=489)
+        self.esm.classifier.out_proj = nn.Linear(640, num_classes)
+        #esm.config.problem_type = "multi_label_classification"
+        problem_settings = {"task": "multilabel", "num_labels": 489}
+        self.accuracy = Accuracy(**problem_settings)
+        self.aupr = AveragePrecision(**problem_settings)
+        self.auroc = AUROC(**problem_settings)
+        self.F1Score = F1Score(**problem_settings)
+        self.precision = Precision(**problem_settings)
+        self.recall = Recall(**problem_settings)
+        self.save_hyperparameters(ignore=["_class_path"])
         self.record_preds = []
-
+        if "freeze" in kwargs:
+            for param in self.esm.esm.parameters():
+                param.requires_grad=False
+            for param in self.esm.classifier.parameters():
+                param.requires_grad=True
     def forward(self, batch):
-        outputs = self.lora_esm(input_ids=batch["esm_input_ids"], attention_mask=batch["esm_attention_mask"], labels=batch["labels"])
         #loss_fn = nn.BCELoss()
+        outputs = self.esm(input_ids=batch["esm_input_ids"], attention_mask=batch["esm_attention_mask"], labels=batch["labels"])
         #loss = loss_fn(outputs.logits.squeeze(1), batch["labels"])
-        #outputs["logits"] = logits.squeeze(1)
+        outputs["logits"] = outputs.logits.squeeze(1)
         #outputs.loss = loss
         outputs.logits = torch.nn.functional.sigmoid(outputs.logits)
         return outputs
@@ -948,17 +974,28 @@ class ESMGoTerm(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         outputs = self(batch)
         loss = outputs.loss.detach()
+        logits = outputs.logits
         self.accuracy(outputs.logits, batch.labels)
         self.F1Score(outputs.logits, batch.labels)
+        self.precision_values.append(self.precision(logits, batch.labels))
+        self.recall_values.append(self.recall(logits, batch.labels))
+        self.record_preds.append((outputs.logits, batch.labels))
         self.log("accuracy_loss", self.accuracy, on_step=False, on_epoch=True, prog_bar=True, logger=True,
                  sync_dist=True)
         self.log("F1_score", self.F1Score, on_step=False, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
         self.log('val_loss', loss, on_step=True, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
+        self.auroc(outputs.logits, batch.labels.int())
+        self.aupr(outputs.logits, batch.labels.int())
+        self.log("auroc", self.auroc,on_step=False, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
+        self.log("aupr", self.aupr, on_step=False, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
         return loss
 
     def test_step(self, batch, batch_idx):
         outputs = self(batch)
         loss = outputs.loss.detach()
+        logits = outputs.logits
+        self.precision_values.append(self.precision(logits, batch.labels))
+        self.recall_values.append(self.recall(logits, batch.labels))
         self.record_preds.append((outputs.logits, batch.labels))
         self.accuracy(outputs.logits, batch.labels)
         self.F1Score(outputs.logits, batch.labels)
@@ -966,6 +1003,11 @@ class ESMGoTerm(pl.LightningModule):
                  sync_dist=True)
         self.log("F1_score", self.F1Score, on_step=False, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
         self.log('test_loss', loss, on_step=True, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
+        self.auroc(outputs.logits, batch.labels.int())
+        self.aupr(outputs.logits, batch.labels.int())
+        self.log("auroc", self.auroc,on_step=False, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
+        self.log("aupr", self.aupr, on_step=False, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
+
         return loss
 
     def on_test_epoch_end(self):
@@ -982,6 +1024,19 @@ class ESMGoTerm(pl.LightningModule):
                 fmax = fscore
         self.log("fmax_score", fmax, on_step=False, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
 
+    def on_validation_epoch_start(self) -> None:
+        self.recall_values = []
+        self.precision_values = []
+        self.record_preds = []
+
+    def on_validation_epoch_end(self) -> None:
+        self.on_test_epoch_end()
+
+    def on_test_epoch_start(self) -> None:
+        self.on_validation_epoch_start()
+
+
+
     def configure_optimizers(self):
         optimizer = AdamW(filter(lambda p: p.requires_grad, self.parameters()), lr=self.hparams.learning_rate)
         scheduler = get_constant_schedule(optimizer)  # TODO switch scheduler to number of training steps
@@ -995,8 +1050,12 @@ class T5ESMRegression(T5PropertyRegression):  # eventually I will go back here a
         super().__init__(scaler_path, checkpoint_path, learning_rate, num_classes, lr_free, **kwargs)
         self.esm = EsmModel.from_pretrained("facebook/esm2_t30_150M_UR50D")
         # freeze all the parameters in esm
-        for param in self.esm.parameters():
-            param.requires_grad = False
+        if "freeze" in kwargs:
+            for param in self.esm.parameters():
+                param.requires_grad = False
+        else:
+            for param in self.esm.parameters():
+                param.requires_grad = True
         if self.model.config.d_model != self.esm.config.hidden_size:
             self.projection = nn.Sequential(
             nn.Linear(self.esm.config.hidden_size, self.model.config.d_model),
@@ -1030,22 +1089,31 @@ class T5AltRegression(T5PropertyRegression):  # eventually I will go back here a
         super().__init__(scaler_path, checkpoint_path, learning_rate, num_classes, lr_free, **kwargs)
 
     def forward(self, **inputs):  # input_ids, attention_mask, decoder_input_ids, decoder_attention_mask, labels):
-        # TODO We will rework embeddings to serve input_ids, attention_mask, and esm_input_ids
-        # TODO ensure we don't pull the class tag
-        outputs = self.model(inputs["input_ids"], inputs["attention_mask"], decoder_input_ids=inputs["decoder_input_ids"],
-                             decoder_attention_mask=inputs["decoder_attention_mask"])  # Check on decoder attn mask
-        # make soft labels with inputs["labels"]
-        outputs.logits = outputs.logits[:, -1, :]
+
+        if "labels" in inputs:
+            labels = inputs.pop("labels")  # Remove labels from input
+        else:
+            labels = None
+
+        outputs = self.model(**inputs)
+
+        outputs.logits = outputs.logits[:, -1, :]  # [B, C * V]
+
         soft_labels = nn.LogSoftmax(dim=-1)(
-            einops.rearrange(outputs.logits.squeeze(1), "b (c v) -> b c v ", v=2))  # B, 123, 2
-        smoothed_labels = torch.stack([1 - inputs["labels"], inputs["labels"]], dim=-1)
-        smoothed_labels = einops.rearrange(smoothed_labels, "b (c v) -> b c v", v=2)
-        smoothed_labels = torch.clamp(smoothed_labels, min=0.0, max=1.0)
-        loss = self.loss_fn(soft_labels, smoothed_labels)
-        outputs.loss = loss
+            einops.rearrange(outputs.logits, "b (c v) -> b c v", v=2)
+        )  # [B, 123, 2]
+
+        if labels is not None:
+            labels = labels.unsqueeze(-1).expand(-1, soft_labels.shape[1])
+            smoothed_labels = torch.stack([1 - labels, labels], dim=-1)  # [B, C * V]
+            #smoothed_labels = einops.rearrange(smoothed_labels, "b (c v) -> b c v", v=2)  # [B, C, V]
+            smoothed_labels = torch.clamp(smoothed_labels, min=0.0, max=1.0)
+
+            loss = self.loss_fn(soft_labels, smoothed_labels)
+            outputs.loss = loss
+
         outputs.logits = soft_labels
         return outputs
-
 
 class T5AltSwap(T5PropertyRegression):
     def __init__(self, scaler_path, checkpoint_path: Path = None, learning_rate=5e-4, num_classes=1, lr_free=False,
