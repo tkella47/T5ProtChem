@@ -43,7 +43,7 @@ def extract_T5_model_pl(path, learning_rate, new_out=None, **kwargs):
         model.model.set_output_embeddings(nn.Linear(model.model.config.d_model, model_dict["lm_head.weight"].shape[0], bias=True if "lm_head.bias" in model_dict else False))
     if "lm_head.bias" in model_dict:
         model.model.set_output_embeddings(nn.Linear(model.model.config.d_model, model_dict["lm_head.weight"].shape[0], bias=True))
-    model.load_state_dict(model_dict)
+    model.load_state_dict(model_dict,strict=False)
     return model.model
 
 def extract_T5_model(path, learning_rate, new_out=None, **kwargs):
@@ -53,7 +53,7 @@ def extract_T5_model(path, learning_rate, new_out=None, **kwargs):
         model.model.set_output_embeddings(nn.Linear(model.model.config.d_model, model_dict["model.lm_head.weight"].shape[0], bias=True if "model.lm_head.bias" in model_dict else False))
     if "model.lm_head.bias" in model_dict:
         model.model.set_output_embeddings(nn.Linear(model.model.config.d_model, model_dict["model.lm_head.weight"].shape[0], bias=True))
-    model.load_state_dict(model_dict)
+    model.load_state_dict(model_dict,strict=False)
     return model.model
 
 
@@ -786,7 +786,7 @@ class T5Classification(pl.LightningModule):
         self.save_hyperparameters(ignore=["_class_path"])
         self.model = extract_T5_model(checkpoint_path, learning_rate, **kwargs)
         self.model.set_output_embeddings(nn.Linear(self.model.config.d_model, num_classes)) # Change LM Head)
-        if num_classes == 1:
+        if num_classes == 1 or "binary" in kwargs:
             problem_settings = {"task":"binary"}
         else:
             problem_settings = {"task":"multilabel", "num_labels":num_classes}
@@ -797,7 +797,10 @@ class T5Classification(pl.LightningModule):
         self.precision = Precision(**problem_settings)
         self.recall = Recall(**problem_settings)
         self.record_preds = []
-        self.model.config.tie_word_embeddings = False
+        if "tie" in kwargs:
+            self.model.config.tie_word_embeddings = True
+        else:
+            self.model.config.tie_word_embeddings = False
 
         if "graph" in kwargs:
             self.graph = kwargs["graph"]
@@ -908,7 +911,7 @@ class T5Classification(pl.LightningModule):
 class T5ESMClassification(T5Classification):
     def __init__(self, checkpoint_path, learning_rate=5e-4, num_cycles=3,
                  num_classes=498, max_steps=300000, **kwargs) -> None:
-        super().__init__(checkpoint_path, learning_rate, num_cycles, num_classes, max_steps, **kwargs)
+        super().__init__( learning_rate=learning_rate, num_cycles=num_cycles, num_classes=num_classes, max_steps=max_steps, checkpoint_path=checkpoint_path,**kwargs)
         self.esm = EsmModel.from_pretrained("facebook/esm2_t30_150M_UR50D")
         # freeze all the parameters in esm
         if "freeze" in kwargs:
@@ -917,6 +920,7 @@ class T5ESMClassification(T5Classification):
         else:
             for param in self.esm.parameters():
                 param.requires_grad = True
+
 
     def forward(self, **batch):
         esm_embeddings = self.esm(batch["esm_input_ids"], batch["esm_attention_mask"]).last_hidden_state
